@@ -1,9 +1,10 @@
-from scapy.all import sniff, DHCP, ARP, Ether, BOOTP, srp #general reference for anything scapy: https://scapy.readthedocs.io/en/latest/usage.html
-from datetime import datetime, timedelta
-import requests
-import threading 
-import time
-import logging #general reference for anything logging related: https://docs.python.org/3/howto/logging.html
+#Fully written and implemented by Sarjoun Radiyeh (Detection aspect falls under my responsibility completely)
+from scapy.all import sniff, DHCP, ARP, Ether, BOOTP, srp #general reference for anything scapy: https://scapy.readthedocs.io/en/latest/usage.html. This library was necessary for everything, can't sniff or create packets without it
+from datetime import datetime, timedelta #necessary for implementing anything related to the time window
+import requests #necessary for sending the alerts to slack
+import threading #necessary for periodic ema updates and for old mac requests to be cleaned every time window duration no matter whether a DHCP offer is detected or not, could not be implemeted otherwise.
+import time #only necessary for time.sleep() function, we need the thread to only occur every time window duration
+import logging #general reference for anything logging related: https://docs.python.org/3/howto/logging.html. This library is necessary if logging was to be implemented, otherwise I'd have to resort to basic printing on the console
 
 mac_requests= {} #dictionary to track MAC addresses and their request time
 window= 60 #time window in seconds
@@ -25,7 +26,7 @@ logging.basicConfig( #creating config for logging
 def update_ema(current_mac_count, old_ema, alpha): #Idea taken from EECE 350 slides... EstimatedRTT = (1- α)*EstimatedRTT + α*SampleRTT
     return alpha * current_mac_count + (1 - alpha) * old_ema 
 
-def periodic_ema_update(): #the goal with this is to have changing threshold for unique mac addresses based on how the network behaves within the window
+def periodic_ema_update_and_old_mac_cleaning(): #the goal with this is to have changing threshold for unique mac addresses based on how the network behaves within the window
     global mac_requests  #be able to access mac_requests
     global ema #be able to access and modify ema
     while True:
@@ -44,10 +45,10 @@ def verify_ip_is_used(ipaddr, macaddr): #Idea inspired by https://ieeexplore.iee
     count= 0
     arp_req_packet= Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ipaddr) #general reference for arp process: https://www.practicalnetworking.net/series/arp/traditional-arp/
     while count!=arp_retries:
-        (answered, unanswered) = srp(arp_req_packet, timeout=1, verbose=False) #arp request asking Who's Ip is this? 
+        (answered, unanswered)= srp(arp_req_packet, timeout=1, verbose=False) #arp request asking Who's Ip is this? 
         if answered:
             for (sent, response) in answered:
-                if response[ARP].hwsrc == macaddr: #if the source MAC address of the targetted IP is the same as the MAC address from the DHCP offer then it should return True as this implies the device actually exists
+                if response[ARP].hwsrc == macaddr: #if the source MAC address from the ARP reply (if the reply exists) of the targetted IP is the same as the MAC address from the DHCP offer then it should return True as this implies the device actually exists and is using the allocated IP address from the DHCP server
                     return True
         count+=1
     return False
@@ -55,9 +56,9 @@ def verify_ip_is_used(ipaddr, macaddr): #Idea inspired by https://ieeexplore.iee
 def clean_old_requests():#clean up the old requests outside the time window
     global mac_requests #be able to access and modify mac_requests
     #logging.debug("Cleaning old MAC requests.") #may be used for debugging purposes
-    time_now = datetime.now()
+    time_now= datetime.now()
     for macaddr in list(mac_requests.keys()):
-        mac_requests[macaddr] = [time for time in mac_requests[macaddr] if time > time_now - timedelta(seconds=window)] #if the time is greater the time now - window then dont include that specific time entry for that MAC entry(remove it)
+        mac_requests[macaddr]= [time for time in mac_requests[macaddr] if time > time_now - timedelta(seconds=window)] #if the time is greater the time now - window then dont include that specific time entry for that MAC entry(remove it)
         if not mac_requests[macaddr]:#remove the MAC address if no time entries are left
             del mac_requests[macaddr]
 
@@ -78,7 +79,7 @@ def detect_dhcp_starvation(packet):
 
         current_unique_macaddr_count= len(mac_requests) #count the current unique MAC addresses in the given window
         
-        if not verify_ip_is_used(offered_ip, macaddr):
+        if not verify_ip_is_used(offered_ip, macaddr):#if the source MAC address from the ARP reply (if the ARP reply even happens) of the targetted IP is NOT the same as the MAC address from the DHCP offer... something suspicious is going on
             logging.warning(f"Suspicious allocation for {macaddr} at {offered_ip}. No ARP reply received.")
             message= {
             "text": f":warning: DHCP Starvation Potential Attack Detected! Suspicious allocation for {macaddr} at {offered_ip}. No ARP reply received." 
@@ -94,11 +95,10 @@ def detect_dhcp_starvation(packet):
 
 
 def main():
-    ema_update_thread = threading.Thread(target=periodic_ema_update, daemon=True) #learnt from: https://www.geeksforgeeks.org/multithreading-python-set-1/
-    ema_update_thread.start() #start a separate thread for periodic ema updates
+    ema_update_thread= threading.Thread(target=periodic_ema_update_and_old_mac_cleaning, daemon=True) #learnt from: https://www.geeksforgeeks.org/multithreading-python-set-1/
+    ema_update_thread.start() #start a separate thread for periodic ema updates and cleaning the old mac addresses in the dictionary
 
-    sniff(iface='eth0', filter='udp and (port 67 or port 68)', prn=detect_dhcp_starvation) #sniff for DHCP traffic continuously
+    sniff(iface='eth0', filter='udp and (port 67 or port 68)', prn=detect_dhcp_starvation) #sniff for DHCP traffic continuously, modify the iface based on your device (usually Wi-Fi for Windows, eth0 for kali vm, ens33 for ubuntu vm...)
 
 if __name__ == "__main__":
     main()
-    
