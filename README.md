@@ -3,7 +3,7 @@
 ## Objective
 Our objective for this assignment is to create a network attack along with a corresponding detection method. We chose to focus our efforts on the topic of DHCP starvation.
 
-# Definition:
+## Definition:
 DHCP starvation attack is a malicious digital attack that target DHCP servers. During attack, a hostile actor floods a DHCP server with Discover packets until the DHCP server exhausts its supply of IP addresses. Once that happens, the attacker can deny legitimate network users service, or even supply an alternate DHCP connection that leads to a MITM attack.
 
 ## Description of Tools
